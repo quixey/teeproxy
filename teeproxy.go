@@ -91,6 +91,7 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.Header()[k] = v
 	}
 	body, _ := ioutil.ReadAll(resp.Body)
+	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
 }
 
