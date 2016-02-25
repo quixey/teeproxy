@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"time"
 	"io/ioutil"
+    "net/http/fcgi"
 )
 
 // Console flags
@@ -109,7 +110,7 @@ func main() {
 		Target:      *targetProduction,
 		Alternative: *altTarget,
 	}
-	http.Serve(local, h)
+	fcgi.Serve(local, h)
 }
 
 type nopCloser struct {
