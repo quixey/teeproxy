@@ -99,7 +99,7 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func main() {
 	flag.Parse()
 
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	runtime.GOMAXPROCS(runtime.NumCPU() * 8)
 
 	local, err := net.Listen("tcp", *listen)
 	if err != nil {
