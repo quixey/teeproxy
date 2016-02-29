@@ -130,7 +130,10 @@ func main() {
 	flag.Parse()
 
 	runtime.GOMAXPROCS(runtime.NumCPU() * 32)
-	log.Info("Debugging: %#v\n", *debug)
+	log.Info("Debugging: ", *debug)
+	if *debug{
+		log.SetLevel(log.DebugLevel)
+	}
 	log.Debug("Start Time: ", time.Now())
 
 	local, err := net.Listen("tcp", *listen)
