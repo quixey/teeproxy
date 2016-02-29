@@ -13,6 +13,7 @@ import (
 	"math/rand"
 	"strings"
 	log "github.com/Sirupsen/logrus"
+	"fmt"
 )
 
 
@@ -76,17 +77,17 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		LogWithTime("Bulding Alternate Request", requestID)
 		p, err := LocalParseURL(h.Alternative)
 		if err != nil{
-			log.Error("Failed to parse Target: %s: %v\n", h.Alternative, err)
+			log.Error(fmt.Sprintf("Failed to parse Target: %s: %v\n", h.Alternative, err))
 		}
 		req1.URL.Scheme = p.Scheme
 		req1.URL.Host = p.Host
-		log.Debug("Alternative Scheme: %s; Alternative Host: %s\n", p.Scheme, p.Host)
+		log.Debug(fmt.Sprintf("Alternative Scheme: %s; Alternative Host: %s\n", p.Scheme, p.Host))
 		clientHttpConn1 := &http.Client{
 			Timeout: time.Duration(time.Duration(*alternateTimeout)*time.Second),
 		}
 		_, err = clientHttpConn1.Do(req1)
 		if err != nil {
-			log.Error("Failed to send to %s: %v\n", h.Target, err)
+			log.Error(fmt.Sprintf("Failed to send to %s: %v\n", h.Target, err))
 			return
 		}
 		LogWithTime("Altnernate Request Finished", requestID)
@@ -97,15 +98,16 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			log.Warn("Recovered in f", r)
 		}
 	}()
+
 	LogWithTime("Bulding Target Request", requestID)
 	p, err := LocalParseURL(h.Target)
 	if err != nil {
-		log.Error("Failed to parse Target: %s: %v\n", h.Target, err)
+		log.Error(fmt.Sprintf("Failed to parse Target: %s: %v\n", h.Target, err))
 	}
 	req2.URL.Host = p.Host
 	req2.URL.Scheme = p.Scheme
 
-	log.Debug("Target Scheme: %s; Target Host: %s\n", p.Scheme, p.Host)
+	log.Debug(fmt.Sprintf("Target Scheme: %s; Target Host: %s\n", p.Scheme, p.Host))
 
 	clientHttpConn2 := &http.Client{
 		Timeout: time.Duration(time.Duration(*productionTimeout) * time.Second),
@@ -113,7 +115,7 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	resp2, err := clientHttpConn2.Do(req2)
 	LogWithTime("Target Reply Received", requestID)
 	if err != nil {
-		log.Error("Failed to send to %s: %v\n", h.Target, err)
+		log.Error(fmt.Sprintf("Failed to send to %s: %v\n", h.Target, err))
 		return
 	}
 	for k, v := range resp2.Header {
@@ -138,7 +140,7 @@ func main() {
 
 	local, err := net.Listen("tcp", *listen)
 	if err != nil {
-		log.Error("Failed to listen to %s\n", *listen)
+		log.Error(fmt.Sprintf("Failed to listen to %s\n", *listen))
 		return
 	}
 	h := handler{
