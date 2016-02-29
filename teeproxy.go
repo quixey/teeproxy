@@ -67,6 +67,13 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	requestID := MakeRequestID()
 	LogWithTime("New Request", requestID)
 
+	log.WithFields(
+		log.Fields{
+			"request_id": requestID,
+			"request_method": req.Method,
+			"request_path": req.URL.Path,
+		}).Debug("Incomming Request")
+
 	req1, req2 := DuplicateRequest(req)
 	go func() {
 		defer func() {
@@ -125,7 +132,7 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	resp2.Body.Close()
 	w.WriteHeader(resp2.StatusCode)
 	w.Write(body)
-	LogWithTime("Target Reply Sent", requestID)
+	LogWithTime("Target Reply Returned to Client", requestID)
 }
 
 func main() {
