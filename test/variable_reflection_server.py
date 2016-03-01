@@ -102,7 +102,7 @@ def catch_all(path):
 
 
 
-    print "Request seen: {} with body {}\ndelay: {}".format(flask.request.full_path, ujson.dumps(flask.request.json, indent=2), delay)
+    print "Request seen: {} with body {}\nReply Delay Will Be: {}".format(flask.request.full_path, ujson.dumps(flask.request.json, indent=2), delay)
     time.sleep(delay)
     return flask.Response(status=200, response=flask.request.full_path + '\n' + ujson.dumps(flask.request.json, indent=2)+ '\n')
 

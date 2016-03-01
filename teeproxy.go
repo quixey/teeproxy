@@ -75,13 +75,15 @@ var ops  uint64 = 0
 
 // ServeHTTP duplicates the incoming request (req) and does the request to the Target and the Alternate target discading the Alternate response
 func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	atomic.AddUint64(&ops, 1)
 	thisop := atomic.LoadUint64(&ops)
+	atomic.AddUint64(&ops, 1)
 	requestID := MakeRequestID()
 	LogDebugWithTime(fmt.Sprintf("New Request Op: %d", thisop), requestID)
 
 	log.WithFields(
 		log.Fields{
+			"request_op": thisop,
+
 			"request_id": requestID,
 			"request_method": req.Method,
 			"request_path": req.URL.RequestURI(),
