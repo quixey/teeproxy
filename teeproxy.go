@@ -18,11 +18,19 @@ import (
 )
 
 
-func LogWithTime (s string, r string){
+func LogDebugWithTime (s string, r string){
 	log.WithFields(log.Fields{
     		"Timestamp": time.Now(),
 		"request_id": r,
 	}).Debug(s)
+}
+
+
+func LogErrorWithTime (s string, r string){
+	log.WithFields(log.Fields{
+    		"Timestamp": time.Now(),
+		"request_id": r,
+	}).Error(s)
 }
 
 
@@ -70,26 +78,26 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	atomic.AddUint64(&ops, 1)
 	thisop := atomic.LoadUint64(&ops)
 	requestID := MakeRequestID()
-	LogWithTime(fmt.Sprintf("New Request Op: %d", thisop), requestID)
+	LogDebugWithTime(fmt.Sprintf("New Request Op: %d", thisop), requestID)
 
 	log.WithFields(
 		log.Fields{
 			"request_id": requestID,
 			"request_method": req.Method,
-			"request_path": req.URL.Path,
+			"request_path": req.URL.RequestURI(),
 		}).Debug("Incomming Request")
 
-	_, req2 := DuplicateRequest(req)
-	/*go func() {
+	req1, req2 := DuplicateRequest(req)
+	go func() {
 		defer func() {
 			if r := recover(); r != nil && *debug {
 				log.Warn("Recovered in f", r)
 			}
 		}()
-		LogWithTime("Bulding Alternate Request", requestID)
+		LogDebugWithTime("Bulding Alternate Request", requestID)
 		p, err := LocalParseURL(h.Alternative)
 		if err != nil{
-			log.Error(fmt.Sprintf("Failed to parse Target: %s: %v\n", h.Alternative, err))
+			LogErrorWithTime(fmt.Sprintf("Failed to parse Target: %s: %v\n", h.Alternative, err), requestID)
 		}
 		req1.URL.Scheme = p.Scheme
 		req1.URL.Host = p.Host
@@ -98,24 +106,24 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			Timeout: time.Duration(time.Duration(*alternateTimeout)*time.Second),
 		}
 		_, err = clientHttpConn1.Do(req1)
-		runtime.Gosched()
+		 runtime.Gosched()
 		if err != nil {
-			log.Error(fmt.Sprintf("Failed to send to %s: %v\n", h.Target, err))
+			LogErrorWithTime(fmt.Sprintf("Failed to send to %s: %v\n", h.Target, err), requestID)
 			return
 		}
-		LogWithTime("Altnernate Request Finished", requestID)
+		LogDebugWithTime("Altnernate Request Finished", requestID)
 	}()
 
 	defer func() {
 		if r := recover(); r != nil && *debug {
 			log.Warn("Recovered in f", r)
 		}
-	}()*/
+	}()
 
-	LogWithTime("Bulding Target Request", requestID)
+	LogDebugWithTime("Bulding Target Request", requestID)
 	p, err := LocalParseURL(h.Target)
 	if err != nil {
-		log.Error(fmt.Sprintf("Failed to parse Target: %s: %v\n", h.Target, err))
+		LogErrorWithTime(fmt.Sprintf("Failed to parse Target: %s: %v\n", h.Target, err), requestID)
 	}
 	req2.URL.Host = p.Host
 	req2.URL.Scheme = p.Scheme
@@ -126,9 +134,9 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Timeout: time.Duration(time.Duration(*productionTimeout) * time.Second),
 	}
 	resp2, err := clientHttpConn2.Do(req2)
-	LogWithTime("Target Reply Received", requestID)
+	LogDebugWithTime("Target Reply Received", requestID)
 	if err != nil {
-		log.Error(fmt.Sprintf("Failed to send to %s: %v\n", h.Target, err))
+		LogErrorWithTime(fmt.Sprintf("Failed to send to %s: %v\n", h.Target, err), requestID)
 		return
 	}
 	for k, v := range resp2.Header {
@@ -138,7 +146,7 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	resp2.Body.Close()
 	w.WriteHeader(resp2.StatusCode)
 	w.Write(body)
-	LogWithTime("Target Reply Returned to Client", requestID)
+	LogDebugWithTime("Target Reply Returned to Client", requestID)
 }
 
 func main() {
@@ -153,7 +161,7 @@ func main() {
 
 	local, err := net.Listen("tcp", *listen)
 	if err != nil {
-		log.Error(fmt.Sprintf("Failed to listen to %s\n", *listen))
+		LogErrorWithTime(fmt.Sprintf("Failed to listen to %s\n", *listen), "MAIN")
 		return
 	}
 	h := handler{
