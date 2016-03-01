@@ -62,6 +62,39 @@ func MakeRequestID() (id string){
 	return RandomString(32)
 }
 
+type requestSet struct {
+	Request 	http.Request
+	Host 		string
+	RequestID	string
+}
+
+var alternate = make(chan requestSet, 5000)
+
+func SendToAlternate(req *requestSet){
+		defer func() {
+			if r := recover(); r != nil && *debug {
+				log.Warn("Recovered in f", r)
+			}
+		}()
+		LogWithTime("Bulding Alternate Request", req.RequestID)
+		p, err := LocalParseURL(req.Host)
+		if err != nil{
+			log.Error(fmt.Sprintf("Failed to parse Target: %s: %v\n", req.Host, err))
+		}
+		req.Request.URL.Scheme = p.Scheme
+		req.Request.URL.Host = p.Host
+		clientHttpConn1 := &http.Client{
+			Timeout: time.Duration(time.Duration(*alternateTimeout)*time.Second),
+		}
+		_, err = clientHttpConn1.Do(req.Request)
+		if err != nil {
+			log.Error(fmt.Sprintf("Failed to send to %s: %v\n", req.Host, err))
+			return
+		}
+		LogWithTime("Altnernate Request Finished", req.RequestID)
+}
+
+
 // ServeHTTP duplicates the incoming request (req) and does the request to the Target and the Alternate target discading the Alternate response
 func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	requestID := MakeRequestID()
@@ -72,33 +105,14 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			"request_id": requestID,
 			"request_method": req.Method,
 			"request_path": req.URL.Path,
+			"request_args": req.URL.RawQuery,
+			"request_body": req.Body,
 		}).Debug("Incomming Request")
 
 	req1, req2 := DuplicateRequest(req)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil && *debug {
-				log.Warn("Recovered in f", r)
-			}
-		}()
-		LogWithTime("Bulding Alternate Request", requestID)
-		p, err := LocalParseURL(h.Alternative)
-		if err != nil{
-			log.Error(fmt.Sprintf("Failed to parse Target: %s: %v\n", h.Alternative, err))
-		}
-		req1.URL.Scheme = p.Scheme
-		req1.URL.Host = p.Host
-		log.Debug(fmt.Sprintf("Alternative Scheme: %s; Alternative Host: %s\n", p.Scheme, p.Host))
-		clientHttpConn1 := &http.Client{
-			Timeout: time.Duration(time.Duration(*alternateTimeout)*time.Second),
-		}
-		_, err = clientHttpConn1.Do(req1)
-		if err != nil {
-			log.Error(fmt.Sprintf("Failed to send to %s: %v\n", h.Target, err))
-			return
-		}
-		LogWithTime("Altnernate Request Finished", requestID)
-	}()
+
+	
+}
 
 	defer func() {
 		if r := recover(); r != nil && *debug {
@@ -113,8 +127,6 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	req2.URL.Host = p.Host
 	req2.URL.Scheme = p.Scheme
-
-	log.Debug(fmt.Sprintf("Target Scheme: %s; Target Host: %s\n", p.Scheme, p.Host))
 
 	clientHttpConn2 := &http.Client{
 		Timeout: time.Duration(time.Duration(*productionTimeout) * time.Second),
@@ -140,6 +152,16 @@ func main() {
 
 	runtime.GOMAXPROCS(runtime.NumCPU() * 32)
 	log.Info("Debugging: ", *debug)
+
+
+
+	go func(){
+		for {
+			a := <- alternate
+			SendToAlternate(a, *altTarget, )
+		}
+	}
+
 	if *debug{
 		log.SetLevel(log.DebugLevel)
 	}
