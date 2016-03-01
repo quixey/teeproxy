@@ -14,6 +14,7 @@ import (
 	"strings"
 	log "github.com/Sirupsen/logrus"
 	"fmt"
+	"sync/atomic"
 )
 
 
@@ -62,10 +63,14 @@ func MakeRequestID() (id string){
 	return RandomString(32)
 }
 
+var ops  uint64 = 0
+
 // ServeHTTP duplicates the incoming request (req) and does the request to the Target and the Alternate target discading the Alternate response
 func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	atomic.AddUint64(&ops, 1)
+	thisop := atomic.LoadUint64(&ops)
 	requestID := MakeRequestID()
-	LogWithTime("New Request", requestID)
+	LogWithTime(fmt.Sprintf("New Request Op: %d", thisop), requestID)
 
 	log.WithFields(
 		log.Fields{
@@ -74,8 +79,8 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			"request_path": req.URL.Path,
 		}).Debug("Incomming Request")
 
-	req1, req2 := DuplicateRequest(req)
-	go func() {
+	_, req2 := DuplicateRequest(req)
+	/*go func() {
 		defer func() {
 			if r := recover(); r != nil && *debug {
 				log.Warn("Recovered in f", r)
@@ -93,6 +98,7 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			Timeout: time.Duration(time.Duration(*alternateTimeout)*time.Second),
 		}
 		_, err = clientHttpConn1.Do(req1)
+		runtime.Gosched()
 		if err != nil {
 			log.Error(fmt.Sprintf("Failed to send to %s: %v\n", h.Target, err))
 			return
@@ -104,7 +110,7 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if r := recover(); r != nil && *debug {
 			log.Warn("Recovered in f", r)
 		}
-	}()
+	}()*/
 
 	LogWithTime("Bulding Target Request", requestID)
 	p, err := LocalParseURL(h.Target)
