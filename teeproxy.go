@@ -44,20 +44,38 @@ var (
 	workers = flag.Int("w", 1, "number of workers allowed to send traffic to b")
 )
 
+var tasks = make(chan request_task, 128)
+
+var ops uint64 = 0
+
 // handler contains the address of the main Target and the one for the Alternative target
 type handler struct {
 	Target      string
 	Alternative string
 }
 
+type request_task struct {
+	Request http.Request
+	ID      string
+}
+
+type nopCloser struct {
+	io.Reader
+}
+
+func (nopCloser) Close() error {
+	return nil
+}
+
+// Be sure we have a scheme in our host URIs, to accomodate the rather crappy go-native tokenization
 func LocalParseURL(rawurl string) (u *url.URL, err error) {
 	if !strings.Contains(rawurl, "http://") && !strings.Contains(rawurl, "https://") {
 		rawurl = "http://" + rawurl
 	}
-	log.Debug(fmt.Sprintf("Parrsing: %s", rawurl))
 	return url.Parse(rawurl)
 }
 
+// Generate working request_ids for debug
 func RandomString(strlen int) string {
 	rand.Seed(time.Now().UTC().UnixNano())
 	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -72,15 +90,7 @@ func MakeRequestID() (id string) {
 	return RandomString(32)
 }
 
-var ops uint64 = 0
-
-type request_task struct {
-	Request http.Request
-	ID      string
-}
-
-var tasks = make(chan request_task, 128)
-
+// channelized worker queue for dispatching mirrored requests
 func worker(tasks <-chan request_task, quit <-chan bool, tick <-chan bool, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for {
@@ -97,11 +107,8 @@ func worker(tasks <-chan request_task, quit <-chan bool, tick <-chan bool, wg *s
 			}
 			task.Request.URL.Host = alt_target_parse.Host
 			task.Request.URL.Scheme = alt_target_parse.Scheme
-			log.Debug(fmt.Sprintf("alt host is: %s", task.Request.URL.Host))
-
 
 			LogDebugWithTime("Bulding Alternate Request", task.ID)
-			log.Debug(fmt.Sprintf("New Request  to altservice %s %s", task.Request.URL.Host, task.Request.URL.RequestURI()))
 			clientHttpConn1 := &http.Client{
 				Timeout: time.Duration(time.Duration(*alternateTimeout) * time.Second),
 			}
@@ -174,7 +181,6 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Timeout: time.Duration(time.Duration(*productionTimeout) * time.Second),
 	}
 
-	log.Debug(fmt.Sprintf("New Request to target service %s %s", target_request.URL.Host, target_request.URL.RequestURI()))
 	resp2, err := clientHttpConn2.Do(target_request)
 	LogDebugWithTime("Target Reply Received", requestID)
 	if err != nil {
@@ -194,11 +200,13 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func main() {
 	flag.Parse()
 
+	// We shouldn't have to worry about this is 1.5... nonetheless:
 	max_workers := runtime.GOMAXPROCS(runtime.NumCPU() * 32)
 	if *workers > max_workers {
 		*workers = max_workers
 	}
 
+	// set up for STDOUT
 	log.Info("Debugging: ", *debug)
 	if *debug {
 		log.SetLevel(log.DebugLevel)
@@ -206,6 +214,7 @@ func main() {
 	log.Debug("Workers: ", *workers)
 	log.Debug("Start Time: ", time.Now())
 
+	// our queue channels
 	quit := make(chan bool)
 	tick := make(chan bool)
 	var wg sync.WaitGroup
@@ -216,6 +225,7 @@ func main() {
 		go worker(tasks, quit, tick, &wg)
 	}
 
+	// set up HTTP listener
 	local, err := net.Listen("tcp", *listen)
 	if err != nil {
 		LogErrorWithTime(fmt.Sprintf("Failed to listen to %s\n", *listen), "MAIN")
@@ -225,26 +235,23 @@ func main() {
 		Target:      *targetProduction,
 		Alternative: *altTarget,
 	}
+
+	// start marking time
 	go func() {
 		for {
 			time.Sleep(time.Second * 1)
 			tick <- true
 		}
 	}()
+
+	// run service (NOTE: feel free to replace 'http' for 'fcgi' if you don't care about proxying headers
 	http.Serve(local, h)
 
+	// ... and our cleanup
 	defer func() {
 		close(quit)
 		wg.Wait()
 	}()
-}
-
-type nopCloser struct {
-	io.Reader
-}
-
-func (nopCloser) Close() error {
-	return nil
 }
 
 func DuplicateRequest(request *http.Request) (request1 *http.Request, request2 *http.Request) {
