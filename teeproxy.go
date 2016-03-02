@@ -15,20 +15,19 @@ import (
 	log "github.com/Sirupsen/logrus"
 	"fmt"
 	"sync/atomic"
+	"sync"
 )
 
-
-func LogDebugWithTime (s string, r string){
+func LogDebugWithTime(s string, r string) {
 	log.WithFields(log.Fields{
-    		"Timestamp": time.Now(),
+		"Timestamp": time.Now(),
 		"request_id": r,
 	}).Debug(s)
 }
 
-
-func LogErrorWithTime (s string, r string){
+func LogErrorWithTime(s string, r string) {
 	log.WithFields(log.Fields{
-    		"Timestamp": time.Now(),
+		"Timestamp": time.Now(),
 		"request_id": r,
 	}).Error(s)
 }
@@ -36,12 +35,13 @@ func LogErrorWithTime (s string, r string){
 
 // Console flags
 var (
-	listen            = flag.String("l", ":8888", "port to accept requests")
-	targetProduction  = flag.String("a", "localhost:8080", "where production traffic goes. http://localhost:8080/production")
-	altTarget         = flag.String("b", "localhost:8081", "where testing traffic goes. response are skipped. http://localhost:8081/test")
-	debug             = flag.Bool("debug", false, "more logging, showing ignored output")
+	listen = flag.String("l", ":8888", "port to accept requests")
+	targetProduction = flag.String("a", "localhost:8080", "where production traffic goes. http://localhost:8080/production")
+	altTarget = flag.String("b", "localhost:8081", "where testing traffic goes. response are skipped. http://localhost:8081/test")
+	debug = flag.Bool("debug", false, "more logging, showing ignored output")
 	productionTimeout = flag.Int("a.timeout", 3, "timeout in seconds for production traffic")
-	alternateTimeout  = flag.Int("b.timeout", 3, "timeout in seconds for alternate site traffic")
+	alternateTimeout = flag.Int("b.timeout", 3, "timeout in seconds for alternate site traffic")
+	workers = flag.Int("w", 1, "number of workers allowed to send traffic to b")
 )
 
 // handler contains the address of the main Target and the one for the Alternative target
@@ -50,10 +50,11 @@ type handler struct {
 	Alternative string
 }
 
-func LocalParseURL (rawurl string) (u *url.URL, err error)  {
-	if !strings.Contains(rawurl, "http://") && !strings.Contains(rawurl, "https://"){
-		rawurl = "http://"+rawurl
+func LocalParseURL(rawurl string) (u *url.URL, err error) {
+	if !strings.Contains(rawurl, "http://") && !strings.Contains(rawurl, "https://") {
+		rawurl = "http://" + rawurl
 	}
+	log.Debug(fmt.Sprintf("Parrsing: %s", rawurl))
 	return url.Parse(rawurl)
 }
 
@@ -67,75 +68,114 @@ func RandomString(strlen int) string {
 	return string(result)
 }
 
-func MakeRequestID() (id string){
+func MakeRequestID() (id string) {
 	return RandomString(32)
 }
 
-var ops  uint64 = 0
+var ops uint64 = 0
+
+type request_task struct {
+	Request http.Request
+	ID      string
+}
+
+var tasks = make(chan request_task, 128)
+
+func worker(tasks <-chan request_task, quit <-chan bool, tick <-chan bool, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for {
+		select {
+		case task, ok := <-tasks:
+			if !ok {
+				return
+			}
+
+			// create and dispatch asynch. request to alternate
+			alt_target_parse, err := LocalParseURL(*altTarget)
+			if err != nil {
+				LogErrorWithTime(fmt.Sprintf("Failed to parse Target: %s: %v\n", *altTarget, err), task.ID)
+			}
+			task.Request.URL.Host = alt_target_parse.Host
+			task.Request.URL.Scheme = alt_target_parse.Scheme
+			log.Debug(fmt.Sprintf("alt host is: %s", task.Request.URL.Host))
+
+
+			LogDebugWithTime("Bulding Alternate Request", task.ID)
+			log.Debug(fmt.Sprintf("New Request  to altservice %s %s", task.Request.URL.Host, task.Request.URL.RequestURI()))
+			clientHttpConn1 := &http.Client{
+				Timeout: time.Duration(time.Duration(*alternateTimeout) * time.Second),
+			}
+
+			_, err = clientHttpConn1.Do(&task.Request)
+			if err != nil {
+				LogErrorWithTime(fmt.Sprintf("Failed to send to %s: %v\n", task.Request.Host, err), task.ID)
+				return
+			}
+			LogDebugWithTime("Altnernate Request Finished", task.ID)
+		case <-quit:
+			return
+		case <-tick:
+			if len(tasks >= 64){
+				log.WithFields(log.Fields{
+					"Tick": time.Now(),
+					"Buffered Jobs": len(tasks),
+				}).Debug("Status")
+			} else {
+				log.WithFields(log.Fields{
+					"Tick": time.Now(),
+					"Buffered Jobs": len(tasks),
+				}).Warn("Status")
+			}
+
+		}
+	}
+}
 
 // ServeHTTP duplicates the incoming request (req) and does the request to the Target and the Alternate target discading the Alternate response
 func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// process accounting
 	thisop := atomic.LoadUint64(&ops)
 	atomic.AddUint64(&ops, 1)
 	requestID := MakeRequestID()
-	LogDebugWithTime(fmt.Sprintf("New Request Op: %d", thisop), requestID)
 
+	// preliminary logging
+	LogDebugWithTime(fmt.Sprintf("New Request Op: %d", thisop), requestID)
 	log.WithFields(
 		log.Fields{
 			"request_op": thisop,
-
 			"request_id": requestID,
 			"request_method": req.Method,
 			"request_path": req.URL.RequestURI(),
 		}).Debug("Incomming Request")
 
-	req1, req2 := DuplicateRequest(req)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil && *debug {
-				log.Warn("Recovered in f", r)
-			}
-		}()
-		LogDebugWithTime("Bulding Alternate Request", requestID)
-		p, err := LocalParseURL(h.Alternative)
-		if err != nil{
-			LogErrorWithTime(fmt.Sprintf("Failed to parse Target: %s: %v\n", h.Alternative, err), requestID)
-		}
-		req1.URL.Scheme = p.Scheme
-		req1.URL.Host = p.Host
-		log.Debug(fmt.Sprintf("Alternative Scheme: %s; Alternative Host: %s\n", p.Scheme, p.Host))
-		clientHttpConn1 := &http.Client{
-			Timeout: time.Duration(time.Duration(*alternateTimeout)*time.Second),
-		}
-		_, err = clientHttpConn1.Do(req1)
-		 runtime.Gosched()
-		if err != nil {
-			LogErrorWithTime(fmt.Sprintf("Failed to send to %s: %v\n", h.Target, err), requestID)
-			return
-		}
-		LogDebugWithTime("Altnernate Request Finished", requestID)
-	}()
+	// cppy the request
+	alt_request, target_request := DuplicateRequest(req)
 
+	tasks <- request_task {
+		Request:           *alt_request,
+		ID:                requestID,
+	}
+
+	// run same request with the target
 	defer func() {
 		if r := recover(); r != nil && *debug {
 			log.Warn("Recovered in f", r)
 		}
 	}()
-
 	LogDebugWithTime("Bulding Target Request", requestID)
-	p, err := LocalParseURL(h.Target)
+	target_parse, err := LocalParseURL(h.Target)
 	if err != nil {
 		LogErrorWithTime(fmt.Sprintf("Failed to parse Target: %s: %v\n", h.Target, err), requestID)
 	}
-	req2.URL.Host = p.Host
-	req2.URL.Scheme = p.Scheme
-
-	log.Debug(fmt.Sprintf("Target Scheme: %s; Target Host: %s\n", p.Scheme, p.Host))
+	target_request.URL.Host = target_parse.Host
+	target_request.URL.Scheme = target_parse.Scheme
 
 	clientHttpConn2 := &http.Client{
 		Timeout: time.Duration(time.Duration(*productionTimeout) * time.Second),
 	}
-	resp2, err := clientHttpConn2.Do(req2)
+
+	log.Debug(fmt.Sprintf("New Request to target service %s %s", target_request.URL.Host, target_request.URL.RequestURI()))
+	resp2, err := clientHttpConn2.Do(target_request)
 	LogDebugWithTime("Target Reply Received", requestID)
 	if err != nil {
 		LogErrorWithTime(fmt.Sprintf("Failed to send to %s: %v\n", h.Target, err), requestID)
@@ -154,12 +194,27 @@ func (h handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func main() {
 	flag.Parse()
 
-	runtime.GOMAXPROCS(runtime.NumCPU() * 32)
+	max_workers := runtime.GOMAXPROCS(runtime.NumCPU() * 32)
+	if *workers > max_workers {
+		*workers = max_workers
+	}
+
 	log.Info("Debugging: ", *debug)
-	if *debug{
+	if *debug {
 		log.SetLevel(log.DebugLevel)
 	}
+	log.Debug("Workers: ", *workers)
 	log.Debug("Start Time: ", time.Now())
+
+	quit := make(chan bool)
+	tick := make(chan bool)
+	var wg sync.WaitGroup
+
+	// spawn workers
+	for i := 0; i < *workers; i++ {
+		wg.Add(1)
+		go worker(tasks, quit, tick, &wg)
+	}
 
 	local, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -170,14 +225,27 @@ func main() {
 		Target:      *targetProduction,
 		Alternative: *altTarget,
 	}
+	go func() {
+		for {
+			time.Sleep(time.Second * 1)
+			tick <- true
+		}
+	}()
 	http.Serve(local, h)
+
+	defer func() {
+		close(quit)
+		wg.Wait()
+	}()
 }
 
 type nopCloser struct {
 	io.Reader
 }
 
-func (nopCloser) Close() error { return nil }
+func (nopCloser) Close() error {
+	return nil
+}
 
 func DuplicateRequest(request *http.Request) (request1 *http.Request, request2 *http.Request) {
 	b1 := new(bytes.Buffer)
