@@ -122,7 +122,7 @@ func worker(tasks <-chan request_task, quit <-chan bool, tick <-chan bool, wg *s
 		case <-quit:
 			return
 		case <-tick:
-			if len(tasks >= 64){
+			if len(tasks) <= 64{
 				log.WithFields(log.Fields{
 					"Tick": time.Now(),
 					"Buffered Jobs": len(tasks),
